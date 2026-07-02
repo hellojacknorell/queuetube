@@ -60,7 +60,7 @@ function getAllTags() {
   Object.values(state.channelTags).forEach(arr => {
     if (Array.isArray(arr)) arr.forEach(t => set.add(t));
   });
-  return [...set].sort();
+  return [...set].filter(t => t !== "everything").sort();
 }
 
 function getHandlesInTag(tag) {
@@ -69,9 +69,15 @@ function getHandlesInTag(tag) {
     .map(ch => ch.handle);
 }
 
-function displayName(handle) {
+function channelLabel(ch) {
+  const handle = normaliseHandle(ch?.handle || "");
+  const name = String(ch?.displayName || handle || "").trim();
+  return handle ? `${name || handle} [@${handle}]` : name;
+}
+
+function channelLabelForHandle(handle) {
   const ch = state.channels.find(c => c.handle === handle);
-  return ch ? ch.displayName : handle;
+  return channelLabel(ch || { handle, displayName: handle });
 }
 
 function esc(str) {
@@ -79,6 +85,10 @@ function esc(str) {
 }
 
 function $(id) { return document.getElementById(id); }
+
+function normaliseHandle(raw) {
+  return String(raw).replace(/^\/?@/, "").trim().toLowerCase();
+}
 
 // ── Main view ─────────────────────────────────────────────────
 
@@ -223,7 +233,7 @@ function buildChannelRowHTML(ch) {
     <div class="channel-row ${isOpen ? "row-open" : ""}" data-handle="${esc(ch.handle)}">
       <div class="channel-row-main">
         <div class="ch-avatar">${initials}</div>
-        <span class="channel-name" title="@${esc(ch.handle)}">${esc(ch.displayName)}</span>
+        <span class="channel-name" title="@${esc(ch.handle)}">${esc(channelLabel(ch))}</span>
         <div class="channel-tag-chips">${chips}</div>
       </div>
       ${dropdownHTML}
@@ -311,6 +321,10 @@ function confirmNewTag() {
   const inp = $("new-tag-input");
   const raw = (inp ? inp.value : state.tagInput).trim().replace(/^#+/,"").replace(/\s+/g,"-").toLowerCase();
   if (!raw) return;
+  if (raw === "everything") {
+    alert("#everything is reserved for QueueTube's built-in all-channels option.");
+    return;
+  }
   state.tagInput = ""; state.tagInputVisible = false;
   openTagView(raw);
 }
@@ -342,7 +356,7 @@ function renderTagView() {
           ? `<div class="empty-hint">No channels yet — add some below</div>`
           : memberHandles.map(h => `
               <div class="member-row">
-                <span class="channel-name">${esc(displayName(h))}</span>
+                <span class="channel-name">${esc(channelLabelForHandle(h))}</span>
                 <button class="remove-btn" data-handle="${esc(h)}" title="Remove">−</button>
               </div>`).join("")
         }
@@ -397,7 +411,7 @@ function updateMembersSection(tag) {
     ? `<div class="empty-hint">No channels yet — add some below</div>`
     : memberHandles.map(h => `
         <div class="member-row">
-          <span class="channel-name">${esc(displayName(h))}</span>
+          <span class="channel-name">${esc(channelLabelForHandle(h))}</span>
           <button class="remove-btn" data-handle="${esc(h)}" title="Remove">−</button>
         </div>`).join("");
 
@@ -430,7 +444,7 @@ function renderAddList(tag) {
 
   addList.innerHTML = filtered.map(ch => `
     <div class="add-row">
-      <span class="channel-name">${esc(ch.displayName)}</span>
+      <span class="channel-name">${esc(channelLabel(ch))}</span>
       <button class="add-btn" data-handle="${esc(ch.handle)}" title="Add to tag">+</button>
     </div>`).join("");
 
@@ -513,6 +527,7 @@ function renderSettings() {
         <div class="empty-icon">📺</div>
         <p>All data cleared.</p>
         <p>Go to <a id="channels-link" href="#">youtube.com/feed/channels</a> and click <strong>Capture Subscriptions</strong> to start again.</p>
+        <p>Then come back here and use <strong>+ New tag</strong> to re-add any tags you want.</p>
       </div>
     `;
     $("channels-link").addEventListener("click", e => { e.preventDefault(); chrome.tabs.create({ url: "https://www.youtube.com/feed/channels" }); });
@@ -558,6 +573,7 @@ function showSettingsToast(msg) {
         <div class="empty-icon">📺</div>
         <p>No channels captured yet.</p>
         <p>Go to <a id="channels-link" href="#">youtube.com/feed/channels</a><br/>and click <strong>Capture Subscriptions</strong>.</p>
+        <p>After capture, return here and use <strong>+ New tag</strong> to re-add tags if none are stored.</p>
       </div>
     `;
     $("channels-link").addEventListener("click", e => { e.preventDefault(); chrome.tabs.create({ url: "https://www.youtube.com/feed/channels" }); });

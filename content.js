@@ -21,9 +21,12 @@ function storageGet(defaults, cb) {
 
 function storageSet(values, cb) {
   try {
-    chrome.storage.local.set(values, () => { if (cb) cb(); });
+    chrome.storage.local.set(values, () => {
+      const ok = !chrome.runtime.lastError;
+      if (cb) cb(ok);
+    });
   } catch(e) {
-    if (cb) cb();
+    if (cb) cb(false);
   }
 }
 
@@ -193,15 +196,53 @@ function filterVideosUnwatched(videos) {
 // ── Feed page: inject queue button ───────────────────────────
 
 let tagPanelOpen = false;
+let tagQueueMode = null;
 
 function injectQueueButton() {
   if (document.getElementById("queuetube-btn-wrapper")) return;
+  tagPanelOpen = false;
+  tagQueueMode = null;
 
   // Outer anchor — fixed position, centred. Does NOT use flexbox that would
   // shift the Queue button when the tag row expands. Instead the tag row is
   // absolutely positioned so it never affects sibling layout.
   const wrapper = document.createElement("div");
   wrapper.id = "queuetube-btn-wrapper";
+  let continueBtn = null;
+  let tagRowControl = null;
+  let hashBtnControl = null;
+
+  function startQueue(videos, message) {
+    if (!videos.length) return;
+    setQueue(videos, () => setIndex(0, () => {
+      persistQueue(videos, 0, () => {
+        showToast(message);
+        setTimeout(() => { window.location.href = videos[0].url; }, 800);
+      });
+    }));
+  }
+
+  function openTagPanel(mode, tagRow, hashBtn) {
+    tagQueueMode = mode;
+    tagPanelOpen = true;
+    tagRow.classList.add("open");
+    btn.classList.toggle("active", mode === "all");
+    hashBtn.classList.add("active");
+    unwatchedBtn.classList.toggle("active", mode === "unwatched");
+    hashBtn.setAttribute("aria-label", mode === "unwatched" ? "Filter unwatched queue by tag" : "Filter queue by tag");
+    if (continueBtn) continueBtn.classList.add("qt-hidden");
+  }
+
+  function closeTagPanel(tagRow, hashBtn) {
+    tagQueueMode = null;
+    tagPanelOpen = false;
+    tagRow.classList.remove("open");
+    btn.classList.remove("active");
+    hashBtn.classList.remove("active");
+    unwatchedBtn.classList.remove("active");
+    hashBtn.setAttribute("aria-label", "Filter queue by tag");
+    if (continueBtn) continueBtn.classList.remove("qt-hidden");
+  }
 
   // Main queue button
   const btn = document.createElement("button");
@@ -209,14 +250,9 @@ function injectQueueButton() {
   btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg><span>Queue Subscriptions</span>`;
   btn.setAttribute("aria-label", "Queue all subscription videos for back-to-back playback");
   btn.addEventListener("click", () => {
-    const videos = scrapeFeedVideos();
-    if (!videos.length) { alert("No videos found — try scrolling down first to load more."); return; }
-    setQueue(videos, () => setIndex(0, () => {
-      persistQueue(videos, 0, () => {
-        showToast(`✅ Queued ${videos.length} videos! Starting now…`);
-        setTimeout(() => { window.location.href = videos[0].url; }, 800);
-      });
-    }));
+    if (!tagRowControl || !hashBtnControl) return;
+    openTagPanel("all", tagRowControl, hashBtnControl);
+    showToast("Choose a tag to queue subscriptions.");
   });
   wrapper.appendChild(btn);
 
@@ -225,23 +261,13 @@ function injectQueueButton() {
   unwatchedBtn.id = "queuetube-unwatched-btn";
   unwatchedBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span>Queue Unwatched</span>`;
   unwatchedBtn.setAttribute("aria-label", "Queue only videos with no watch progress");
-  unwatchedBtn.addEventListener("click", () => {
-    const videos = scrapeFeedVideos();
-    const unwatched = filterVideosUnwatched(videos);
-    if (!unwatched.length) {
-      showToast("⚠️ No unwatched videos found — try scrolling to load more first.");
-      return;
-    }
-    setQueue(unwatched, () => setIndex(0, () => {
-      persistQueue(unwatched, 0, () => {
-        showToast(`✅ Queued ${unwatched.length} unwatched videos! Starting now…`);
-        setTimeout(() => { window.location.href = unwatched[0].url; }, 800);
-      });
-    }));
-  });
   wrapper.appendChild(unwatchedBtn);
 
-  let continueBtn = null;
+  unwatchedBtn.addEventListener("click", () => {
+    if (!tagRowControl || !hashBtnControl) return;
+    openTagPanel("unwatched", tagRowControl, hashBtnControl);
+    showToast("Choose a tag to queue unwatched videos.");
+  });
 
   function appendContinueButton(done) {
     getSavedQueue(saved => {
@@ -267,58 +293,78 @@ function injectQueueButton() {
   }
 
   getAllTags(allTags => {
-    if (allTags.length > 0) {
-      // # btn — declared first but appended AFTER tagRow so it appears to the right of tags
-      const hashBtn = document.createElement("button");
-      hashBtn.id = "queuetube-hash-btn";
-      hashBtn.setAttribute("aria-label", "Filter queue by tag");
-      hashBtn.innerHTML = `<span>#</span>`;
+    const visibleTags = allTags.filter(tag => tag !== "everything");
+    // # btn — declared first but appended AFTER tagRow so it appears to the right of tags
+    const hashBtn = document.createElement("button");
+    hashBtn.id = "queuetube-hash-btn";
+    hashBtn.setAttribute("aria-label", "Choose queue tag");
+    hashBtn.innerHTML = `<span>#</span>`;
 
-      // Tag row — inline flex, slides open between Queue btn and # btn
-      const tagRow = document.createElement("div");
-      tagRow.id = "queuetube-tag-row";
+    // Tag row — inline flex, slides open between Queue btn and # btn
+    const tagRow = document.createElement("div");
+    tagRow.id = "queuetube-tag-row";
+    tagRowControl = tagRow;
+    hashBtnControl = hashBtn;
 
-      allTags.forEach((tag, i) => {
+    function queueForTag(tag) {
+      const videos = scrapeFeedVideos();
+      if (!videos.length) {
+        showToast("⚠️ No videos found — try scrolling down first to load more.");
+        return;
+      }
+
+      const finish = filtered => {
+        const queue = tagQueueMode === "unwatched" ? filterVideosUnwatched(filtered) : filtered;
+        if (!queue.length) {
+          const scope = tagQueueMode === "unwatched" ? "unwatched videos" : "videos";
+          showToast(`⚠️ No ${scope} found for #${tag} — try scrolling to load more first.`);
+          return;
+        }
+        const label = tagQueueMode === "unwatched" ? "unwatched videos" : "videos";
+        startQueue(queue, `✅ Queued ${queue.length} ${label} for #${tag}!`);
+      };
+
+      if (tag === "everything") {
+        finish(videos);
+        return;
+      }
+
+      filterVideosByTag(videos, tag, finish);
+    }
+
+    const everythingBtn = document.createElement("button");
+    everythingBtn.className = "queuetube-tag-btn";
+    everythingBtn.textContent = "#everything";
+    everythingBtn.addEventListener("click", () => queueForTag("everything"));
+    tagRow.appendChild(everythingBtn);
+
+    if (visibleTags.length > 0) {
+      visibleTags.forEach((tag, i) => {
         const tb = document.createElement("button");
         tb.className = "queuetube-tag-btn";
         tb.textContent = `#${tag}`;
         tb.style.animationDelay = `${i * 40}ms`;
-        tb.addEventListener("click", () => {
-          const videos = scrapeFeedVideos();
-          filterVideosByTag(videos, tag, filtered => {
-            if (!filtered.length) {
-              showToast(`⚠️ No videos found for #${tag} — try scrolling to load more first.`);
-              return;
-            }
-            setQueue(filtered, () => setIndex(0, () => {
-              persistQueue(filtered, 0, () => {
-                showToast(`✅ Queued ${filtered.length} videos for #${tag}!`);
-                setTimeout(() => { window.location.href = filtered[0].url; }, 800);
-              });
-            }));
-          });
-        });
+        tb.addEventListener("click", () => queueForTag(tag));
         tagRow.appendChild(tb);
       });
-
-      // Order: Queue btn | tag row (slides open) | # btn | Continue btn
-      wrapper.appendChild(tagRow);
-      wrapper.appendChild(hashBtn);
-
-      hashBtn.addEventListener("click", () => {
-        tagPanelOpen = !tagPanelOpen;
-        tagRow.classList.toggle("open", tagPanelOpen);
-        hashBtn.classList.toggle("active", tagPanelOpen);
-        // Fade continue button in/out without layout shift
-        if (continueBtn) {
-          if (tagPanelOpen) {
-            continueBtn.classList.add("qt-hidden");
-          } else {
-            continueBtn.classList.remove("qt-hidden");
-          }
-        }
-      });
     }
+
+    // Order: Queue btn | tag row (slides open) | # btn | Continue btn
+    wrapper.appendChild(tagRow);
+    wrapper.appendChild(hashBtn);
+
+    hashBtn.addEventListener("click", () => {
+      if (!tagQueueMode) {
+        showToast("Choose Queue Subscriptions or Queue Unwatched first, then choose a tag.");
+        return;
+      }
+      if (tagPanelOpen) {
+        closeTagPanel(tagRow, hashBtn);
+      } else {
+        openTagPanel(tagQueueMode, tagRow, hashBtn);
+        showToast("Choose a tag.");
+      }
+    });
 
     appendContinueButton(() => document.body.appendChild(wrapper));
   });
@@ -367,9 +413,23 @@ function startChannelCapture() {
 
   function finishCapture() {
     const channels = scrapeChannels();
+
+    if (!channels.length) {
+      document.getElementById("qt-capture-msg").textContent = "No channels found";
+      document.getElementById("qt-capture-sub").textContent = "Scroll the subscriptions page until channels load, then try again.";
+      document.getElementById("qt-capture-count").textContent = "Nothing was saved.";
+
+      setTimeout(() => {
+        document.getElementById("queuetube-capture-overlay")?.remove();
+        injectCaptureButton();
+        showToast("No channels captured. Scroll to load channels, then try again.");
+      }, 2500);
+      return;
+    }
+
     document.getElementById("qt-capture-msg").textContent = "✅ Done!";
     document.getElementById("qt-capture-sub").textContent = `Captured ${channels.length} channels.`;
-    document.getElementById("qt-capture-count").textContent = "Click the extension icon to tag them.";
+    document.getElementById("qt-capture-count").textContent = "Open QueueTube from the extension icon to tag them.";
 
     getChannelTags(existing => {
       const meta = {};
@@ -381,10 +441,16 @@ function startChannelCapture() {
         [CHANNEL_TAGS_KEY]: existing,
         [CHANNELS_KEY]: channels,
         [CHANNEL_META_KEY]: meta
-      }, () => {
+      }, ok => {
+        if (!ok) {
+          document.getElementById("qt-capture-msg").textContent = "Could not save channels";
+          document.getElementById("qt-capture-sub").textContent = "Reload YouTube and the extension, then try capture again.";
+          document.getElementById("qt-capture-count").textContent = "Nothing was saved.";
+          return;
+        }
         setTimeout(() => {
           document.getElementById("queuetube-capture-overlay")?.remove();
-          showToast(`✅ ${channels.length} channels captured! Click the extension icon to tag them.`);
+          showToast(`✅ ${channels.length} channels captured! Open QueueTube and use + New tag.`);
         }, 1500);
       });
     });
@@ -392,11 +458,33 @@ function startChannelCapture() {
 }
 
 // Scrape /feed/channels — returns [{ handle, displayName }]
-// KEY FIX: only read displayName from the anchor's OWN direct yt-formatted-string
-// child (not from a closest() ancestor which causes the doubling bug).
 function scrapeChannels() {
   const seen = new Set();
   const channels = [];
+
+  function cleanChannelName(value, fallback) {
+    const name = String(value || "").trim().replace(/\s+/g, " ");
+    return name || fallback;
+  }
+
+  function displayNameFromRow(a, handle) {
+    const row = a.closest("ytd-channel-renderer, ytd-subscription-item-renderer");
+    const nameEl = row && (
+      row.querySelector("ytd-channel-name #text") ||
+      row.querySelector("ytd-channel-name yt-formatted-string#text") ||
+      row.querySelector("#text-container yt-formatted-string#text") ||
+      row.querySelector("#channel-title") ||
+      row.querySelector("#main-link #text")
+    );
+
+    return cleanChannelName(
+      nameEl?.textContent ||
+      a.querySelector(":scope > yt-formatted-string")?.textContent ||
+      a.querySelector(":scope > span")?.textContent ||
+      (a.children.length === 0 ? a.textContent : null),
+      handle
+    );
+  }
 
   for (const a of document.querySelectorAll(
     "ytd-channel-renderer a[href*='/@'], ytd-subscription-item-renderer a[href*='/@']"
@@ -408,17 +496,7 @@ function scrapeChannels() {
     if (seen.has(handle)) continue;
     seen.add(handle);
 
-    // Only look at direct children to avoid inheriting text from nested containers
-    // that would duplicate the name (the root cause of "Pinkbloc Pinkbloc")
-    const directFmtStr = a.querySelector(":scope > yt-formatted-string");
-    const directSpan   = a.querySelector(":scope > span");
-    const displayName  = (
-      directFmtStr?.textContent ||
-      directSpan?.textContent ||
-      // Last resort: the link's own textContent but ONLY if it has no complex children
-      (a.children.length === 0 ? a.textContent : null) ||
-      handle
-    ).trim().replace(/\s+/g, " ");
+    const displayName = displayNameFromRow(a, handle);
 
     if (displayName.length >= 1) channels.push({ handle, displayName });
   }
@@ -432,12 +510,11 @@ function scrapeChannels() {
       const handle = hMatch[1].toLowerCase();
       if (seen.has(handle)) continue;
       seen.add(handle);
-      const directFmtStr = a.querySelector(":scope > yt-formatted-string");
-      const displayName = (
-        a.getAttribute("aria-label") ||
-        directFmtStr?.textContent ||
+      const displayName = cleanChannelName(
+        displayNameFromRow(a, handle) ||
+        a.getAttribute("aria-label"),
         handle
-      ).trim().replace(/\s+/g, " ");
+      );
       if (displayName.length < 2) continue;
       channels.push({ handle, displayName });
     }

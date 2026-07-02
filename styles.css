@@ -35,6 +35,7 @@
 }
 
 #queuetube-btn:hover { background: #cc0000; transform: scale(1.03); }
+#queuetube-btn.active { background: #990000; }
 #queuetube-btn:active { transform: scale(0.97); }
 #queuetube-btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 
@@ -381,6 +382,11 @@
   color: #fff;
   border-color: #ff0000;
   transform: scale(1.03);
+}
+#queuetube-unwatched-btn.active {
+  background: rgba(180, 0, 0, 0.85);
+  color: #fff;
+  border-color: #ff0000;
 }
 #queuetube-unwatched-btn:active { transform: scale(0.97); }
 #queuetube-unwatched-btn:focus-visible { outline: 2px solid #ff6666; outline-offset: 2px; }
