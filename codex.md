@@ -10,15 +10,17 @@ Scope reviewed:
 
 ## Executive Summary
 
-QueueTube has a small attack surface: it runs only on `https://www.youtube.com/*`, does not fetch remote application data, and does not use `eval` or dynamic code generation. The main security concerns are around storage trust boundaries and DOM rendering.
+QueueTube has a small attack surface: it runs only on `https://www.youtube.com/*`, does not fetch remote application data, and does not use `eval` or dynamic code generation. The original review found that the main security concerns were around storage trust boundaries and DOM rendering.
 
-The extension currently stores queues, captured channels, and tags in `youtube.com` `localStorage` / `sessionStorage`. That means YouTube-origin scripts can read and modify QueueTube data. Because some stored queue fields are later rendered with `innerHTML`, tampered storage can become a DOM injection issue inside the content script UI.
+The page-origin storage issue has been mitigated in the working tree by moving QueueTube-owned queue, saved queue, captured channel, channel metadata, and tag data into `chrome.storage.local`. The remaining high-priority issue is stored queue validation before rendering, because stored queue fields are still later rendered with `innerHTML`.
 
 ## Findings and Mitigations
 
 ### High: Page-origin storage is treated as trusted extension data
 
-Evidence:
+Status: Mitigated in the working tree. QueueTube-owned queue, saved queue, captured channel, channel metadata, and tag data now use `chrome.storage.local`. There is intentionally no migration from old YouTube page-storage keys because the data is trivial and easily rebuilt: users can re-capture subscriptions, recreate tags they still need, and start a fresh queue. The only remaining `sessionStorage` values are short-lived reload/navigation guard flags.
+
+Original evidence:
 - `content.js` reads and writes QueueTube state in page `sessionStorage` and `localStorage`: lines 10, 13, 31, 35, 36, 50, 334-336.
 - `popup.js` reads and writes that page storage via `chrome.scripting.executeScript`: lines 15-18, 28-31, 40-43.
 
@@ -30,8 +32,8 @@ Risk:
 Mitigation steps:
 1. Move QueueTube-owned state to `chrome.storage.local` or `chrome.storage.session`.
 2. Keep only non-sensitive, short-lived page state in `sessionStorage` if it is genuinely needed for page navigation.
-3. Add a migration path that reads existing `queuetube_*` page keys once, validates them, writes them to extension storage, then removes the page keys.
-4. Update `PRIVACY_POLICY.md`; it currently says reset clears `chrome.storage.local`, but the code uses YouTube page storage.
+3. Do not migrate old page-storage data unless the data becomes hard to rebuild. For the current app, the old queue, captured subscriptions, and tags are simple enough to recreate, so avoiding migration keeps the storage change smaller and avoids carrying page-origin data forward.
+4. Keep `PRIVACY_POLICY.md` aligned with the storage implementation.
 
 Recommended storage split:
 - Queue and queue index: `chrome.storage.session` if available, with `chrome.storage.local` only for "continue previous queue".
@@ -40,7 +42,7 @@ Recommended storage split:
 
 ### High: Stored queue values can inject markup through `innerHTML`
 
-Evidence:
+Original evidence:
 - `content.js` builds the queue panel with `panel.innerHTML`: line 410.
 - Titles are escaped with `escapeHtml`, which is good: lines 429-431 and 503.
 - `v.progress` is inserted directly into a `style` attribute: line 435.
@@ -132,7 +134,7 @@ Risk:
 
 Mitigation steps:
 1. Update README badges/text to mention YouTube host access and storage permission accurately.
-2. Update the privacy policy after the storage migration.
+2. Update the privacy policy after the storage change.
 3. State that no browsing history is collected and no data is transmitted off-device, if that remains true after changes.
 
 ## Positive Notes
@@ -158,8 +160,8 @@ The remediation plan above covers the main technical issues, but store review al
 1. Update the Chrome Web Store privacy fields so they match what QueueTube handles locally: YouTube channel names/handles, queue entries, watch-progress signals used for filtering, and user-created tags.
 2. Make the privacy policy clear that this data is stored locally in extension storage, is used only to provide QueueTube's queueing and tagging features, and is not transmitted to the developer or third parties.
 3. Update README and store listing text so they do not claim "No Permissions Required" while the extension requests YouTube host access and storage.
-4. Add a short permission justification for `storage` and YouTube host access. If `scripting` is still required after the storage migration, explain why; otherwise remove it.
-5. Test the packaged extension from a clean profile before submission so the popup, capture flow, queue flow, reset flow, and migration path all work without developer-only state.
+4. Add a short permission justification for `storage` and YouTube host access. If `scripting` is still required after the storage change, explain why; otherwise remove it.
+5. Test the packaged extension from a clean profile before submission so the popup, capture flow, queue flow, reset flow, and no-old-data path all work without developer-only state.
 6. Keep all popup assets packaged locally. Do not load remote fonts or other remote UI resources unless there is a strong reason and the privacy policy discloses it.
 
 ## Changelog Standard

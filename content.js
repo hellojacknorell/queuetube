@@ -3,58 +3,96 @@
 
 const STORAGE_KEY = "queuetube_queue";
 const INDEX_KEY   = "queuetube_index";
+const SAVED_QUEUE_KEY = "queuetube_saved_queue";
+const SAVED_INDEX_KEY = "queuetube_saved_index";
+const CHANNEL_TAGS_KEY = "queuetube_channel_tags";
+const CHANNELS_KEY = "queuetube_channels";
+const CHANNEL_META_KEY = "queuetube_channel_meta";
 
-// ── sessionStorage helpers (per-tab isolated) ────────────────
+// ── Extension storage helpers ────────────────────────────────
+
+function storageGet(defaults, cb) {
+  try {
+    chrome.storage.local.get(defaults, items => cb(items || defaults));
+  } catch(e) {
+    cb(defaults);
+  }
+}
+
+function storageSet(values, cb) {
+  try {
+    chrome.storage.local.set(values, () => { if (cb) cb(); });
+  } catch(e) {
+    if (cb) cb();
+  }
+}
+
+function storageRemove(keys, cb) {
+  try {
+    chrome.storage.local.remove(keys, () => { if (cb) cb(); });
+  } catch(e) {
+    if (cb) cb();
+  }
+}
 
 function getQueue(cb) {
-  try { cb(JSON.parse(sessionStorage.getItem(STORAGE_KEY) || "[]")); } catch(e) { cb([]); }
+  storageGet({ [STORAGE_KEY]: [] }, items => cb(Array.isArray(items[STORAGE_KEY]) ? items[STORAGE_KEY] : []));
 }
 function setQueue(queue, cb) {
-  try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(queue)); } catch(e) {}
-  if (cb) cb();
+  storageSet({ [STORAGE_KEY]: Array.isArray(queue) ? queue : [] }, cb);
 }
 function getIndex(cb) {
-  try { cb(parseInt(sessionStorage.getItem(INDEX_KEY) || "0", 10)); } catch(e) { cb(0); }
+  storageGet({ [INDEX_KEY]: 0 }, items => {
+    const idx = parseInt(items[INDEX_KEY] || "0", 10);
+    cb(Number.isFinite(idx) ? idx : 0);
+  });
 }
 function setIndex(i, cb) {
-  try { sessionStorage.setItem(INDEX_KEY, String(i)); } catch(e) {}
-  if (cb) cb();
+  storageSet({ [INDEX_KEY]: Number.isFinite(i) ? i : 0 }, cb);
 }
 function clearStorage(cb) {
-  try { sessionStorage.removeItem(STORAGE_KEY); sessionStorage.removeItem(INDEX_KEY); } catch(e) {}
-  if (cb) cb();
+  storageRemove([STORAGE_KEY, INDEX_KEY], cb);
 }
 
-// ── localStorage persistent queue ───────────────────────────
+// ── Persistent queue ────────────────────────────────────────
 
-function getSavedQueue() {
-  try { const r = localStorage.getItem("queuetube_saved_queue"); return r ? JSON.parse(r) : null; } catch(e) { return null; }
+function getSavedQueue(cb) {
+  storageGet({ [SAVED_QUEUE_KEY]: null }, items => cb(Array.isArray(items[SAVED_QUEUE_KEY]) ? items[SAVED_QUEUE_KEY] : null));
 }
-function persistQueue(queue, idx) {
-  try {
-    localStorage.setItem("queuetube_saved_queue", JSON.stringify(queue));
-    localStorage.setItem("queuetube_saved_index", String(idx));
-  } catch(e) {}
+function persistQueue(queue, idx, cb) {
+  storageSet({
+    [SAVED_QUEUE_KEY]: Array.isArray(queue) ? queue : [],
+    [SAVED_INDEX_KEY]: Number.isFinite(idx) ? idx : 0
+  }, cb);
 }
-function getSavedIndex() {
-  try { return parseInt(localStorage.getItem("queuetube_saved_index") || "0", 10); } catch(e) { return 0; }
+function getSavedIndex(cb) {
+  storageGet({ [SAVED_INDEX_KEY]: 0 }, items => {
+    const idx = parseInt(items[SAVED_INDEX_KEY] || "0", 10);
+    cb(Number.isFinite(idx) ? idx : 0);
+  });
 }
-function discardSavedQueue() {
-  try { localStorage.removeItem("queuetube_saved_queue"); localStorage.removeItem("queuetube_saved_index"); } catch(e) {}
+function discardSavedQueue(cb) {
+  storageRemove([SAVED_QUEUE_KEY, SAVED_INDEX_KEY], cb);
 }
 
-// ── Channel tags (localStorage) ──────────────────────────────
+// ── Channel tags ─────────────────────────────────────────────
 // Keys are normalised channel handles, e.g. "pinkbloc" (lowercase, no @)
 
-function getChannelTags() {
-  try { return JSON.parse(localStorage.getItem("queuetube_channel_tags") || "{}"); } catch(e) { return {}; }
+function getChannelTags(cb) {
+  storageGet({ [CHANNEL_TAGS_KEY]: {} }, items => {
+    const tags = items[CHANNEL_TAGS_KEY];
+    cb(tags && typeof tags === "object" && !Array.isArray(tags) ? tags : {});
+  });
 }
 
-function getAllTags() {
-  const tags = getChannelTags();
-  const set = new Set();
-  Object.values(tags).forEach(arr => arr.forEach(t => set.add(t)));
-  return [...set].sort();
+function getAllTags(cb) {
+  getChannelTags(tags => {
+    const set = new Set();
+    Object.values(tags).forEach(arr => {
+      if (Array.isArray(arr)) arr.forEach(t => set.add(t));
+    });
+    cb([...set].sort());
+  });
 }
 
 function normaliseHandle(raw) {
@@ -134,15 +172,16 @@ function scrapeFeedVideos() {
   return videos;
 }
 
-function filterVideosByTag(videos, tag) {
-  if (!tag) return videos;
-  const channelTags = getChannelTags();
-  const taggedHandles = new Set(
-    Object.entries(channelTags)
-      .filter(([, tags]) => tags.includes(tag))
-      .map(([handle]) => handle)
-  );
-  return videos.filter(v => taggedHandles.has(v.channelHandle));
+function filterVideosByTag(videos, tag, cb) {
+  if (!tag) { cb(videos); return; }
+  getChannelTags(channelTags => {
+    const taggedHandles = new Set(
+      Object.entries(channelTags)
+        .filter(([, tags]) => Array.isArray(tags) && tags.includes(tag))
+        .map(([handle]) => handle)
+    );
+    cb(videos.filter(v => taggedHandles.has(v.channelHandle)));
+  });
 }
 
 function filterVideosUnwatched(videos) {
@@ -173,9 +212,10 @@ function injectQueueButton() {
     const videos = scrapeFeedVideos();
     if (!videos.length) { alert("No videos found — try scrolling down first to load more."); return; }
     setQueue(videos, () => setIndex(0, () => {
-      persistQueue(videos, 0);
-      showToast(`✅ Queued ${videos.length} videos! Starting now…`);
-      setTimeout(() => { window.location.href = videos[0].url; }, 800);
+      persistQueue(videos, 0, () => {
+        showToast(`✅ Queued ${videos.length} videos! Starting now…`);
+        setTimeout(() => { window.location.href = videos[0].url; }, 800);
+      });
     }));
   });
   wrapper.appendChild(btn);
@@ -193,88 +233,95 @@ function injectQueueButton() {
       return;
     }
     setQueue(unwatched, () => setIndex(0, () => {
-      persistQueue(unwatched, 0);
-      showToast(`✅ Queued ${unwatched.length} unwatched videos! Starting now…`);
-      setTimeout(() => { window.location.href = unwatched[0].url; }, 800);
+      persistQueue(unwatched, 0, () => {
+        showToast(`✅ Queued ${unwatched.length} unwatched videos! Starting now…`);
+        setTimeout(() => { window.location.href = unwatched[0].url; }, 800);
+      });
     }));
   });
   wrapper.appendChild(unwatchedBtn);
 
-  const allTags = getAllTags();
   let continueBtn = null;
 
-  if (allTags.length > 0) {
-    // # btn — declared first but appended AFTER tagRow so it appears to the right of tags
-    const hashBtn = document.createElement("button");
-    hashBtn.id = "queuetube-hash-btn";
-    hashBtn.setAttribute("aria-label", "Filter queue by tag");
-    hashBtn.innerHTML = `<span>#</span>`;
-
-    // Tag row — inline flex, slides open between Queue btn and # btn
-    const tagRow = document.createElement("div");
-    tagRow.id = "queuetube-tag-row";
-
-    allTags.forEach((tag, i) => {
-      const tb = document.createElement("button");
-      tb.className = "queuetube-tag-btn";
-      tb.textContent = `#${tag}`;
-      tb.style.animationDelay = `${i * 40}ms`;
-      tb.addEventListener("click", () => {
-        const videos = scrapeFeedVideos();
-        const filtered = filterVideosByTag(videos, tag);
-        if (!filtered.length) {
-          showToast(`⚠️ No videos found for #${tag} — try scrolling to load more first.`);
-          return;
-        }
-        setQueue(filtered, () => setIndex(0, () => {
-          persistQueue(filtered, 0);
-          showToast(`✅ Queued ${filtered.length} videos for #${tag}!`);
-          setTimeout(() => { window.location.href = filtered[0].url; }, 800);
-        }));
+  function appendContinueButton(done) {
+    getSavedQueue(saved => {
+      if (!saved || !saved.length) { done(); return; }
+      getSavedIndex(savedIdx => {
+        continueBtn = document.createElement("button");
+        continueBtn.id = "queuetube-continue-btn";
+        continueBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><span>Continue Previous Queue (${savedIdx + 1}/${saved.length})</span><span class="qt-continue-discard" title="Discard">&#10005;</span>`;
+        continueBtn.addEventListener("click", (e) => {
+          if (e.target.classList.contains("qt-continue-discard")) {
+            discardSavedQueue(() => { continueBtn.remove(); continueBtn = null; });
+            showToast("Previous queue discarded."); return;
+          }
+          setQueue(saved, () => setIndex(savedIdx, () => {
+            showToast(`▶ Resuming from video ${savedIdx + 1} of ${saved.length}…`);
+            setTimeout(() => { window.location.href = saved[savedIdx].url; }, 800);
+          }));
+        });
+        wrapper.appendChild(continueBtn);
+        done();
       });
-      tagRow.appendChild(tb);
     });
+  }
 
-    // Order: Queue btn | tag row (slides open) | # btn | Continue btn
-    wrapper.appendChild(tagRow);
-    wrapper.appendChild(hashBtn);
+  getAllTags(allTags => {
+    if (allTags.length > 0) {
+      // # btn — declared first but appended AFTER tagRow so it appears to the right of tags
+      const hashBtn = document.createElement("button");
+      hashBtn.id = "queuetube-hash-btn";
+      hashBtn.setAttribute("aria-label", "Filter queue by tag");
+      hashBtn.innerHTML = `<span>#</span>`;
 
-    hashBtn.addEventListener("click", () => {
-      tagPanelOpen = !tagPanelOpen;
-      tagRow.classList.toggle("open", tagPanelOpen);
-      hashBtn.classList.toggle("active", tagPanelOpen);
-      // Fade continue button in/out without layout shift
-      if (continueBtn) {
-        if (tagPanelOpen) {
-          continueBtn.classList.add("qt-hidden");
-        } else {
-          continueBtn.classList.remove("qt-hidden");
+      // Tag row — inline flex, slides open between Queue btn and # btn
+      const tagRow = document.createElement("div");
+      tagRow.id = "queuetube-tag-row";
+
+      allTags.forEach((tag, i) => {
+        const tb = document.createElement("button");
+        tb.className = "queuetube-tag-btn";
+        tb.textContent = `#${tag}`;
+        tb.style.animationDelay = `${i * 40}ms`;
+        tb.addEventListener("click", () => {
+          const videos = scrapeFeedVideos();
+          filterVideosByTag(videos, tag, filtered => {
+            if (!filtered.length) {
+              showToast(`⚠️ No videos found for #${tag} — try scrolling to load more first.`);
+              return;
+            }
+            setQueue(filtered, () => setIndex(0, () => {
+              persistQueue(filtered, 0, () => {
+                showToast(`✅ Queued ${filtered.length} videos for #${tag}!`);
+                setTimeout(() => { window.location.href = filtered[0].url; }, 800);
+              });
+            }));
+          });
+        });
+        tagRow.appendChild(tb);
+      });
+
+      // Order: Queue btn | tag row (slides open) | # btn | Continue btn
+      wrapper.appendChild(tagRow);
+      wrapper.appendChild(hashBtn);
+
+      hashBtn.addEventListener("click", () => {
+        tagPanelOpen = !tagPanelOpen;
+        tagRow.classList.toggle("open", tagPanelOpen);
+        hashBtn.classList.toggle("active", tagPanelOpen);
+        // Fade continue button in/out without layout shift
+        if (continueBtn) {
+          if (tagPanelOpen) {
+            continueBtn.classList.add("qt-hidden");
+          } else {
+            continueBtn.classList.remove("qt-hidden");
+          }
         }
-      }
-    });
-  }
+      });
+    }
 
-  // Continue Previous Queue button
-  const saved = getSavedQueue();
-  if (saved && saved.length > 0) {
-    const savedIdx = getSavedIndex();
-    continueBtn = document.createElement("button");
-    continueBtn.id = "queuetube-continue-btn";
-    continueBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><span>Continue Previous Queue (${savedIdx + 1}/${saved.length})</span><span class="qt-continue-discard" title="Discard">&#10005;</span>`;
-    continueBtn.addEventListener("click", (e) => {
-      if (e.target.classList.contains("qt-continue-discard")) {
-        discardSavedQueue(); continueBtn.remove(); continueBtn = null;
-        showToast("Previous queue discarded."); return;
-      }
-      setQueue(saved, () => setIndex(savedIdx, () => {
-        showToast(`▶ Resuming from video ${savedIdx + 1} of ${saved.length}…`);
-        setTimeout(() => { window.location.href = saved[savedIdx].url; }, 800);
-      }));
-    });
-    wrapper.appendChild(continueBtn);
-  }
-
-  document.body.appendChild(wrapper);
+    appendContinueButton(() => document.body.appendChild(wrapper));
+  });
 }
 
 // ── Channels page: capture subscriptions ────────────────────
@@ -324,22 +371,23 @@ function startChannelCapture() {
     document.getElementById("qt-capture-sub").textContent = `Captured ${channels.length} channels.`;
     document.getElementById("qt-capture-count").textContent = "Click the extension icon to tag them.";
 
-    try {
-      const existing = getChannelTags();
+    getChannelTags(existing => {
       const meta = {};
       channels.forEach(({ handle, displayName }) => {
         if (!(handle in existing)) existing[handle] = [];
         meta[handle] = displayName;
       });
-      localStorage.setItem("queuetube_channel_tags", JSON.stringify(existing));
-      localStorage.setItem("queuetube_channels", JSON.stringify(channels));
-      localStorage.setItem("queuetube_channel_meta", JSON.stringify(meta));
-    } catch(e) {}
-
-    setTimeout(() => {
-      document.getElementById("queuetube-capture-overlay")?.remove();
-      showToast(`✅ ${channels.length} channels captured! Click the extension icon to tag them.`);
-    }, 1500);
+      storageSet({
+        [CHANNEL_TAGS_KEY]: existing,
+        [CHANNELS_KEY]: channels,
+        [CHANNEL_META_KEY]: meta
+      }, () => {
+        setTimeout(() => {
+          document.getElementById("queuetube-capture-overlay")?.remove();
+          showToast(`✅ ${channels.length} channels captured! Click the extension icon to tag them.`);
+        }, 1500);
+      });
+    });
   }
 }
 
@@ -455,13 +503,14 @@ function buildPlayerUI() {
 function goToIndex(i) {
   getQueue(queue => {
     if (i < 0 || i >= queue.length) return;
-    setIndex(i, () => { persistQueue(queue, i); window.location.href = queue[i].url; });
+    setIndex(i, () => { persistQueue(queue, i, () => { window.location.href = queue[i].url; }); });
   });
 }
 
 function stopQueue() {
-  discardSavedQueue();
-  clearStorage(() => { document.getElementById("queuetube-panel")?.remove(); showToast("Queue stopped."); });
+  discardSavedQueue(() => {
+    clearStorage(() => { document.getElementById("queuetube-panel")?.remove(); showToast("Queue stopped."); });
+  });
 }
 
 function watchForVideoEnd() {

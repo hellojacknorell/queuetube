@@ -1,52 +1,44 @@
 // QueueTube - popup.js
 // Tag manager: create tags, assign channels to them.
 
-// ── Chrome bridge ─────────────────────────────────────────────
+// ── Extension storage ─────────────────────────────────────────
 
-async function getYouTubeTab() {
-  const tabs = await chrome.tabs.query({ url: "https://www.youtube.com/*" });
-  return tabs[0] || null;
+const CHANNEL_TAGS_KEY = "queuetube_channel_tags";
+const CHANNELS_KEY = "queuetube_channels";
+const CHANNEL_META_KEY = "queuetube_channel_meta";
+
+function storageGet(defaults) {
+  return new Promise(resolve => {
+    try {
+      chrome.storage.local.get(defaults, items => resolve(items || defaults));
+    } catch(e) {
+      resolve(defaults);
+    }
+  });
 }
 
-async function readFromPage(key) {
-  const tab = await getYouTubeTab();
-  if (!tab) return null;
-  try {
-    const r = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: k => { try { return localStorage.getItem(k); } catch(e) { return null; } },
-      args: [key]
-    });
-    return r[0]?.result ?? null;
-  } catch(e) { return null; }
+function storageSet(values) {
+  return new Promise(resolve => {
+    try {
+      chrome.storage.local.set(values, resolve);
+    } catch(e) {
+      resolve();
+    }
+  });
 }
 
-async function writeToPage(key, value) {
-  const tab = await getYouTubeTab();
-  if (!tab) return;
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: (k, v) => { try { localStorage.setItem(k, v); } catch(e) {} },
-      args: [key, value]
-    });
-  } catch(e) {}
-}
-
-async function removeFromPage(key) {
-  const tab = await getYouTubeTab();
-  if (!tab) return;
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: k => { try { localStorage.removeItem(k); } catch(e) {} },
-      args: [key]
-    });
-  } catch(e) {}
+function storageRemove(keys) {
+  return new Promise(resolve => {
+    try {
+      chrome.storage.local.remove(keys, resolve);
+    } catch(e) {
+      resolve();
+    }
+  });
 }
 
 async function saveChannelTags() {
-  await writeToPage("queuetube_channel_tags", JSON.stringify(state.channelTags));
+  await storageSet({ [CHANNEL_TAGS_KEY]: state.channelTags });
 }
 
 // ── State ─────────────────────────────────────────────────────
@@ -65,7 +57,9 @@ const state = {
 
 function getAllTags() {
   const set = new Set();
-  Object.values(state.channelTags).forEach(arr => arr.forEach(t => set.add(t)));
+  Object.values(state.channelTags).forEach(arr => {
+    if (Array.isArray(arr)) arr.forEach(t => set.add(t));
+  });
   return [...set].sort();
 }
 
@@ -508,9 +502,11 @@ function renderSettings() {
     state.channels = [];
     state.channelTags = {};
     await Promise.all([
-      writeToPage("queuetube_channels", "[]"),
-      writeToPage("queuetube_channel_tags", "{}"),
-      removeFromPage("queuetube_channel_meta"),
+      storageSet({
+        [CHANNELS_KEY]: [],
+        [CHANNEL_TAGS_KEY]: {}
+      }),
+      storageRemove(CHANNEL_META_KEY),
     ]);
     $("app").innerHTML = `
       <div class="empty-state">
@@ -539,14 +535,21 @@ function showSettingsToast(msg) {
 (async () => {
   $("app").innerHTML = `<div class="loading">Loading…</div>`;
 
-  const [channelsRaw, tagsRaw] = await Promise.all([
-    readFromPage("queuetube_channels"),
-    readFromPage("queuetube_channel_tags")
-  ]);
+  const stored = await storageGet({
+    [CHANNELS_KEY]: [],
+    [CHANNEL_TAGS_KEY]: {}
+  });
 
-  const rawChannels = channelsRaw ? JSON.parse(channelsRaw) : [];
-  state.channels = rawChannels.map(c => typeof c === "string" ? { handle: c.toLowerCase(), displayName: c } : c);
-  state.channelTags = tagsRaw ? JSON.parse(tagsRaw) : {};
+  const rawChannels = Array.isArray(stored[CHANNELS_KEY]) ? stored[CHANNELS_KEY] : [];
+  state.channels = rawChannels.map(c => {
+    if (typeof c === "string") return { handle: c.toLowerCase(), displayName: c };
+    return {
+      handle: String(c?.handle || "").toLowerCase(),
+      displayName: String(c?.displayName || c?.handle || "")
+    };
+  }).filter(ch => ch.handle && ch.displayName);
+  const tags = stored[CHANNEL_TAGS_KEY];
+  state.channelTags = tags && typeof tags === "object" && !Array.isArray(tags) ? tags : {};
   state.channels.forEach(ch => { if (!(ch.handle in state.channelTags)) state.channelTags[ch.handle] = []; });
 
   if (!state.channels.length) {
